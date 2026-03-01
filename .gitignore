@@ -1,0 +1,19 @@
+# Environment and secrets
+.env
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Video files
+*.mp4
+*.mov
+*.mkv
+*.avi
+*.webm
+
+# Generated output (subtitles, reports, audio)
+*.srt
+*_report.md
+*.mp3
