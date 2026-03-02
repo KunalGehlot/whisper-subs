@@ -11,6 +11,8 @@ import tempfile
 import math
 from pathlib import Path
 
+from ffmpeg_utils import find_ffmpeg, find_ffprobe
+
 
 def _get_file_size_mb(path: str) -> float:
     """Return file size in megabytes."""
@@ -21,7 +23,7 @@ def _get_video_duration_seconds(video_path: str) -> float:
     """Use ffprobe to get video duration in seconds."""
     result = subprocess.run(
         [
-            "ffprobe",
+            find_ffprobe(),
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -57,7 +59,7 @@ def extract_audio(video_path: str) -> str:
 
     # Check that the file has an audio stream
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-select_streams", "a",
+        [find_ffprobe(), "-v", "error", "-select_streams", "a",
          "-show_entries", "stream=codec_type", "-of", "csv=p=0", video_path],
         capture_output=True, text=True,
     )
@@ -69,7 +71,7 @@ def extract_audio(video_path: str) -> str:
 
     subprocess.run(
         [
-            "ffmpeg",
+            find_ffmpeg(),
             "-y",                  # overwrite without prompting
             "-i", video_path,
             "-vn",                 # no video
@@ -128,7 +130,7 @@ def extract_audio_chunks(video_path: str, max_size_mb: int = 24) -> list[str]:
 
     subprocess.run(
         [
-            "ffmpeg",
+            find_ffmpeg(),
             "-y",
             "-i", video_path,
             "-vn",
