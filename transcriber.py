@@ -1,6 +1,43 @@
 import os
+import re
 import subprocess
 from openai import OpenAI
+
+_HALLUCINATION_PATTERNS = [
+    "untertitel",
+    "amara.org",
+    "amara.ord",
+    "untertitelung",
+    "copyright",
+    "vielen dank",
+    "thank you for watching",
+    "thanks for watching",
+    "please subscribe",
+    "subtitles by",
+    "sous-titres",
+]
+
+
+def _is_hallucination(text: str) -> bool:
+    """Detect likely Whisper hallucination segments."""
+    text = text.strip()
+    if not text:
+        return True
+
+    # Strip whitespace and punctuation to get core content
+    core = re.sub(r'[\s\.,!?\-;:\'\"]+', '', text)
+
+    # Single repeated character (e.g. "T T T T" or "TTTTT")
+    if core and len(set(core.lower())) <= 1:
+        return True
+
+    # Known hallucination phrases
+    lower = text.lower()
+    for phrase in _HALLUCINATION_PATTERNS:
+        if phrase in lower:
+            return True
+
+    return False
 
 
 def _get_audio_duration(path: str) -> float:
@@ -30,17 +67,20 @@ def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
 
         with open(audio_path, "rb") as f:
             response = client.audio.transcriptions.create(
-                model="whisper-1",
+                model="gpt-4o-transcribe",
                 file=f,
                 response_format="verbose_json",
                 timestamp_granularities=["segment"]
             )
 
         for segment in response.segments:
+            text = segment.text.strip()
+            if _is_hallucination(text):
+                continue
             all_segments.append({
                 "start": segment.start + offset,
                 "end": segment.end + offset,
-                "text": segment.text.strip()
+                "text": text
             })
 
         offset += chunk_duration
