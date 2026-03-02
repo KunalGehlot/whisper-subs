@@ -13,6 +13,9 @@ __pycache__/
 *.avi
 *.webm
 
+# Bundled ffmpeg binaries
+ffmpeg*/
+
 # Generated output (subtitles, reports, audio)
 *.srt
 *_report.md

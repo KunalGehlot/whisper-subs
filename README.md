@@ -10,11 +10,14 @@ Generate bilingual subtitles (German + English) and an analysis report from Germ
 - Generates German `.de.srt` subtitle files
 - Translates subtitles to English and generates `.en.srt` files using GPT-4o
 - Produces a structured analysis report (topic, key points, action items, notable quotes)
+- Filters out common Whisper hallucinations (phantom subtitles, attribution text)
+- Accurate subtitle timing even with long pauses in speech
+- Supports bundled ffmpeg binaries for systems without ffmpeg in PATH
 
 ## Prerequisites
 
 - Python 3.10+
-- [ffmpeg](https://ffmpeg.org/) installed and available on your PATH
+- [ffmpeg](https://ffmpeg.org/) (see [Installing ffmpeg](#installing-ffmpeg) below)
 - An [OpenAI API key](https://platform.openai.com/api-keys)
 
 ## Quick Start
@@ -43,15 +46,38 @@ python process_video.py path/to/video.mp4
 
 ## Installing ffmpeg
 
+### macOS
+
 ```bash
-# macOS
 brew install ffmpeg
+```
 
-# Ubuntu / Debian
+### Ubuntu / Debian
+
+```bash
 sudo apt-get install ffmpeg
+```
 
-# Windows
+### Windows
+
+**Option A** - Install via package manager:
+
+```bash
 choco install ffmpeg
+```
+
+**Option B** - Bundled binaries (no install required):
+
+Download ffmpeg from [ffmpeg.org/download](https://ffmpeg.org/download.html) and extract it into the project directory. The tool automatically searches for `ffmpeg*/bin/` folders in the project root before falling back to the system PATH.
+
+```
+whisper-subs/
+  ffmpeg-8.0.1/
+    bin/
+      ffmpeg.exe
+      ffprobe.exe
+  process_video.py
+  ...
 ```
 
 ## Output
@@ -79,6 +105,16 @@ positional arguments:
 options:
   -h, --help         show this help message and exit
   --api-key API_KEY  OpenAI API key (overrides OPENAI_API_KEY env var)
+```
+
+## Running Tests
+
+```bash
+# Offline tests (no API key needed)
+python -m unittest discover tests -v
+
+# Full test suite including live transcription
+OPENAI_API_KEY=sk-... python -m unittest discover tests -v
 ```
 
 ## License
