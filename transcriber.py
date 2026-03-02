@@ -3,6 +3,8 @@ import re
 import subprocess
 from openai import OpenAI
 
+from ffmpeg_utils import find_ffprobe
+
 _HALLUCINATION_PATTERNS = [
     "untertitel",
     "amara.org",
@@ -27,8 +29,8 @@ def _is_hallucination(text: str) -> bool:
     # Strip whitespace and punctuation to get core content
     core = re.sub(r'[\s\.,!?\-;:\'\"]+', '', text)
 
-    # Single repeated character (e.g. "T T T T" or "TTTTT")
-    if core and len(set(core.lower())) <= 1:
+    # Only punctuation/whitespace, or single repeated character (e.g. "T T T T")
+    if len(set(core.lower())) <= 1:
         return True
 
     # Known hallucination phrases
@@ -44,7 +46,7 @@ def _get_audio_duration(path: str) -> float:
     """Return the duration of an audio file in seconds using ffprobe."""
     result = subprocess.run(
         [
-            "ffprobe",
+            find_ffprobe(),
             "-v", "error",
             "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1",
@@ -67,8 +69,9 @@ def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
 
         with open(audio_path, "rb") as f:
             response = client.audio.transcriptions.create(
-                model="gpt-4o-transcribe",
+                model="whisper-1",
                 file=f,
+                language="de",
                 response_format="verbose_json",
                 timestamp_granularities=["segment"]
             )
