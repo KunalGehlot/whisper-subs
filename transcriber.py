@@ -1,5 +1,24 @@
 import os
+import subprocess
 from openai import OpenAI
+
+
+def _get_audio_duration(path: str) -> float:
+    """Return the duration of an audio file in seconds using ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return float(result.stdout.strip())
+
 
 def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
     """Transcribe audio files using Whisper API. Returns verbose JSON with segments."""
@@ -7,6 +26,8 @@ def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
     offset = 0.0
 
     for audio_path in audio_paths:
+        chunk_duration = _get_audio_duration(audio_path)
+
         with open(audio_path, "rb") as f:
             response = client.audio.transcriptions.create(
                 model="whisper-1",
@@ -22,8 +43,7 @@ def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
                 "text": segment.text.strip()
             })
 
-        if response.segments:
-            offset = all_segments[-1]["end"]
+        offset += chunk_duration
 
     full_text = " ".join(s["text"] for s in all_segments)
     return {"segments": all_segments, "text": full_text, "language": "de"}
