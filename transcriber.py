@@ -1,9 +1,20 @@
 import os
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
 from ffmpeg_utils import find_ffprobe
+
+# whisper-1 is the only OpenAI speech model that returns per-segment
+# timestamps (via verbose_json / timestamp_granularities), which subtitles
+# require. gpt-4o-transcribe / gpt-4o-mini-transcribe only return plain text,
+# so do not "upgrade" this model unless the API gains segment timestamps.
+TRANSCRIBE_MODEL = "whisper-1"
+# How many chunks to transcribe concurrently. Each chunk is an independent
+# request, so a small pool speeds up multi-chunk audio without risking rate
+# limits.
+MAX_TRANSCRIBE_WORKERS = 4
 
 _HALLUCINATION_PATTERNS = [
     "untertitel",
@@ -59,34 +70,92 @@ def _get_audio_duration(path: str) -> float:
     return float(result.stdout.strip())
 
 
-def transcribe_audio(audio_paths: list[str], client: OpenAI) -> dict:
-    """Transcribe audio files using Whisper API. Returns verbose JSON with segments."""
-    all_segments = []
-    offset = 0.0
+def _normalize_chunks(chunks: list) -> list[dict]:
+    """Accept either legacy ``list[str]`` paths or ``list[dict]`` chunks.
 
-    for audio_path in audio_paths:
-        chunk_duration = _get_audio_duration(audio_path)
+    Every chunk is returned as ``{"path": str, "offset": float}``. When an offset
+    is missing (legacy plain-path input), it is derived by accumulating the
+    measured durations of the preceding chunks.
+    """
+    normalized: list[dict] = []
+    running_offset = 0.0
+    for chunk in chunks:
+        if isinstance(chunk, dict):
+            path = chunk["path"]
+            offset = chunk.get("offset")
+            if offset is None:
+                offset = running_offset
+        else:
+            path = chunk
+            offset = running_offset
+        offset = float(offset)
+        normalized.append({"path": path, "offset": offset})
+        running_offset = offset + _get_audio_duration(path)
+    return normalized
 
-        with open(audio_path, "rb") as f:
-            response = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language="de",
-                response_format="verbose_json",
-                timestamp_granularities=["segment"]
-            )
 
-        for segment in response.segments:
-            text = segment.text.strip()
-            if _is_hallucination(text):
-                continue
-            all_segments.append({
-                "start": segment.start + offset,
-                "end": segment.end + offset,
-                "text": text
-            })
+def _transcribe_chunk(chunk: dict, client: OpenAI) -> list[dict]:
+    """Transcribe a single chunk and return its segments on the original timeline."""
+    offset = chunk["offset"]
+    with open(chunk["path"], "rb") as f:
+        response = client.audio.transcriptions.create(
+            model=TRANSCRIBE_MODEL,
+            file=f,
+            language="de",
+            response_format="verbose_json",
+            timestamp_granularities=["segment"],
+        )
 
-        offset += chunk_duration
+    segments = []
+    for segment in response.segments or []:
+        text = segment.text.strip()
+        if _is_hallucination(text):
+            continue
+        segments.append({
+            "start": segment.start + offset,
+            "end": segment.end + offset,
+            "text": text,
+        })
+    return segments
+
+
+def transcribe_audio(
+    audio_chunks: list,
+    client: OpenAI,
+    max_workers: int = MAX_TRANSCRIBE_WORKERS,
+) -> dict:
+    """Transcribe audio chunks using the Whisper API. Returns segments + full text.
+
+    ``audio_chunks`` is a list of ``{"path", "offset"}`` dicts (as produced by
+    ``extract_audio_chunks``); plain path strings are also accepted for
+    backwards compatibility. Each chunk's Whisper timestamps are anchored to the
+    chunk's ``offset`` in the original audio, so long pauses between chunks never
+    shift subtitle timing. A failed chunk is skipped with a warning rather than
+    aborting the whole transcription.
+    """
+    chunks = _normalize_chunks(audio_chunks)
+    results: list[list[dict]] = [[] for _ in chunks]
+
+    def run(index: int) -> None:
+        try:
+            results[index] = _transcribe_chunk(chunks[index], client)
+        except Exception as exc:  # noqa: BLE001 - keep going on partial failure
+            print(f"    Warning: chunk {index + 1}/{len(chunks)} failed to "
+                  f"transcribe ({exc}); skipping.")
+
+    if max_workers and len(chunks) > 1:
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as pool:
+            futures = [pool.submit(run, i) for i in range(len(chunks))]
+            for future in as_completed(futures):
+                future.result()  # run() swallows errors; this just surfaces bugs
+    else:
+        for i in range(len(chunks)):
+            run(i)
+
+    all_segments = [seg for chunk_segs in results for seg in chunk_segs]
+    # Chunks are in timeline order, but sort defensively so timestamps are always
+    # monotonically increasing even if padding makes regions touch.
+    all_segments.sort(key=lambda s: (s["start"], s["end"]))
 
     full_text = " ".join(s["text"] for s in all_segments)
     return {"segments": all_segments, "text": full_text, "language": "de"}
@@ -154,7 +223,7 @@ def translate_segments(segments: list[dict], client: OpenAI) -> list[dict]:
     return translated
 
 
-def create_subtitles(audio_paths: list[str], video_path: str, client: OpenAI) -> tuple[str, str, str]:
+def create_subtitles(audio_chunks: list, video_path: str, client: OpenAI) -> tuple[str, str, str]:
     """Main function: transcribe, create German SRT, translate, create English SRT.
     Returns (german_srt_path, english_srt_path, full_transcript_text)."""
 
@@ -162,7 +231,7 @@ def create_subtitles(audio_paths: list[str], video_path: str, client: OpenAI) ->
     video_name = os.path.splitext(os.path.basename(video_path))[0]
 
     print("  Transcribing audio with Whisper API...")
-    result = transcribe_audio(audio_paths, client)
+    result = transcribe_audio(audio_chunks, client)
 
     german_srt = os.path.join(video_dir, f"{video_name}.de.srt")
     print(f"  Writing German subtitles: {german_srt}")

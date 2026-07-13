@@ -50,15 +50,16 @@ def main():
     print(f"Processing: {os.path.basename(video_path)}")
     print(f"{'='*60}\n")
 
-    # Step 1: Extract audio
+    # Step 1: Extract audio, splitting at long pauses so silences never corrupt
+    # Whisper's timestamps.
     print("[1/3] Extracting audio from video...")
-    audio_paths = extract_audio_chunks(video_path)
-    print(f"  Extracted {len(audio_paths)} audio chunk(s)\n")
+    audio_chunks = extract_audio_chunks(video_path)
+    print(f"  Extracted {len(audio_chunks)} audio chunk(s)\n")
 
     try:
         # Step 2: Transcribe and create subtitles
         print("[2/3] Creating subtitles...")
-        german_srt, english_srt, transcript = create_subtitles(audio_paths, video_path, client)
+        german_srt, english_srt, transcript = create_subtitles(audio_chunks, video_path, client)
         print()
 
         # Step 3: Generate report
@@ -69,7 +70,7 @@ def main():
     finally:
         # Clean up temp audio files
         print("Cleaning up temporary files...")
-        cleanup(audio_paths)
+        cleanup([chunk["path"] for chunk in audio_chunks])
 
     # Summary
     print(f"\n{'='*60}")
