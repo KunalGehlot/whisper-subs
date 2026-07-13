@@ -1,8 +1,10 @@
 import os
 from openai import OpenAI
 
+from ui import NULL_REPORTER
 
-def generate_report(transcript: str, video_path: str, client: OpenAI) -> str:
+
+def generate_report(transcript: str, video_path: str, client: OpenAI, reporter=NULL_REPORTER) -> str:
     """Generate a comprehensive report from the German transcript using GPT-4o.
     Returns the path to the generated report file."""
 
@@ -10,7 +12,7 @@ def generate_report(transcript: str, video_path: str, client: OpenAI) -> str:
     video_name = os.path.splitext(os.path.basename(video_path))[0]
     report_path = os.path.join(video_dir, f"{video_name}_report.md")
 
-    print("  Generating key points report with GPT-4o...")
+    reporter.step("report", "Analyzing transcript & writing report (GPT-4o)", total=None)
 
     response = client.chat.completions.create(
         model="gpt-4o",
@@ -53,5 +55,6 @@ Be thorough and capture all important information from the transcript."""
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
 
-    print(f"  Report saved: {report_path}")
+    reporter.done("report")
+    reporter.success(f"Analysis report → {report_path}")
     return report_path
