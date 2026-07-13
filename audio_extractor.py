@@ -20,6 +20,7 @@ import math
 from pathlib import Path
 
 from ffmpeg_utils import find_ffmpeg, find_ffprobe
+from ui import NULL_REPORTER
 
 # --- Silence-splitting tuning ---------------------------------------------
 # Audio quieter than this (in dBFS) is treated as silence.
@@ -250,7 +251,11 @@ def extract_audio(video_path: str) -> str:
     return output_path
 
 
-def extract_audio_chunks(video_path: str, max_size_mb: int = MAX_SIZE_MB) -> list[dict]:
+def extract_audio_chunks(
+    video_path: str,
+    max_size_mb: int = MAX_SIZE_MB,
+    reporter=NULL_REPORTER,
+) -> list[dict]:
     """
     Extract audio from a video and split it into speech chunks at long pauses.
 
@@ -280,47 +285,56 @@ def extract_audio_chunks(video_path: str, max_size_mb: int = MAX_SIZE_MB) -> lis
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video file not found: {video_path}")
 
-    # Extract the full audio track once, then slice it locally.
-    full_audio_path = extract_audio(video_path)
-    duration = _get_media_duration_seconds(full_audio_path)
+    reporter.step("extract", "Extracting audio track", total=None)
+    try:
+        # Extract the full audio track once, then slice it locally.
+        full_audio_path = extract_audio(video_path)
+        duration = _get_media_duration_seconds(full_audio_path)
 
-    silences = _detect_silences(full_audio_path, total_duration=duration)
-    regions = _speech_regions(duration, silences)
-    if not regions:
-        # Detection found nothing (e.g. music bed above the noise floor, or an
-        # entirely silent track) -- fall back to transcribing the whole file.
-        regions = [(0.0, duration)]
-    regions = _cap_regions(regions)
+        reporter.describe("extract", "Detecting speech vs. silence")
+        silences = _detect_silences(full_audio_path, total_duration=duration)
+        regions = _speech_regions(duration, silences)
+        if not regions:
+            # Detection found nothing (e.g. music bed above the noise floor, or an
+            # entirely silent track) -- fall back to transcribing the whole file.
+            regions = [(0.0, duration)]
+        regions = _cap_regions(regions)
 
-    # Fast path: one region spanning (essentially) the whole file, already small
-    # enough. Avoid a needless re-encode and just hand back the full audio.
-    if (
-        len(regions) == 1
-        and regions[0][0] <= CHUNK_PAD_SEC + 0.05
-        and duration - regions[0][1] <= CHUNK_PAD_SEC + 0.05
-        and _get_file_size_mb(full_audio_path) <= max_size_mb
-    ):
-        return [{"path": full_audio_path, "offset": 0.0}]
+        # Fast path: one region spanning (essentially) the whole file, already
+        # small enough. Avoid a needless re-encode and just hand back the audio.
+        if (
+            len(regions) == 1
+            and regions[0][0] <= CHUNK_PAD_SEC + 0.05
+            and duration - regions[0][1] <= CHUNK_PAD_SEC + 0.05
+            and _get_file_size_mb(full_audio_path) <= max_size_mb
+        ):
+            reporter.describe("extract", "Extracted audio (single segment)")
+            return [{"path": full_audio_path, "offset": 0.0}]
 
-    tmp_dir = tempfile.mkdtemp(prefix="whisper_chunks_")
-    chunks: list[dict] = []
-    for i, (start, end) in enumerate(regions):
-        out_path = os.path.join(tmp_dir, f"chunk_{i:03d}.mp3")
-        _extract_region(full_audio_path, start, end - start, out_path)
-        if os.path.getsize(out_path) == 0:
-            continue
-        if _get_file_size_mb(out_path) > max_size_mb:
-            chunks.extend(_split_by_size(out_path, start, tmp_dir, i, max_size_mb))
-        else:
-            chunks.append({"path": out_path, "offset": start})
+        reporter.describe("extract", f"Extracting {len(regions)} speech segment(s)")
+        reporter.set_total("extract", len(regions))
+        tmp_dir = tempfile.mkdtemp(prefix="whisper_chunks_")
+        chunks: list[dict] = []
+        for i, (start, end) in enumerate(regions):
+            out_path = os.path.join(tmp_dir, f"chunk_{i:03d}.mp3")
+            _extract_region(full_audio_path, start, end - start, out_path)
+            reporter.advance("extract")
+            if os.path.getsize(out_path) == 0:
+                continue
+            if _get_file_size_mb(out_path) > max_size_mb:
+                chunks.extend(_split_by_size(out_path, start, tmp_dir, i, max_size_mb))
+            else:
+                chunks.append({"path": out_path, "offset": start})
 
-    if not chunks:
-        # Nothing usable was extracted; keep the full audio as a last resort.
-        return [{"path": full_audio_path, "offset": 0.0}]
+        if not chunks:
+            # Nothing usable was extracted; keep the full audio as a last resort.
+            return [{"path": full_audio_path, "offset": 0.0}]
 
-    # We have standalone chunks now; the full-audio temp file is no longer needed.
-    cleanup([full_audio_path])
-    return chunks
+        # We have standalone chunks now; the full-audio temp file is no longer needed.
+        cleanup([full_audio_path])
+        return chunks
+    finally:
+        reporter.done("extract")
 
 
 def cleanup(paths: list[str]) -> None:

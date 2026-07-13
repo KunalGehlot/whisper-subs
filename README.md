@@ -17,6 +17,10 @@ Generate bilingual subtitles (German + English) and an analysis report from Germ
 - Produces a structured analysis report (topic, key points, action items, notable quotes)
 - Filters out common Whisper hallucinations (phantom subtitles, attribution text)
 - Supports bundled ffmpeg binaries for systems without ffmpeg in PATH
+- Live, interactive terminal progress — per-step spinners and progress bars
+  (powered by [rich](https://github.com/Textualize/rich))
+- Robust path handling on Windows: quoted, dragged-and-dropped, or
+  whitespace-padded paths from CMD/PowerShell are accepted as-is
 
 ## Prerequisites
 

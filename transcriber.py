@@ -1,3 +1,4 @@
+import math
 import os
 import re
 import subprocess
@@ -5,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI
 
 from ffmpeg_utils import find_ffprobe
+from ui import NULL_REPORTER
 
 # whisper-1 is the only OpenAI speech model that returns per-segment
 # timestamps (via verbose_json / timestamp_granularities), which subtitles
@@ -123,6 +125,7 @@ def transcribe_audio(
     audio_chunks: list,
     client: OpenAI,
     max_workers: int = MAX_TRANSCRIBE_WORKERS,
+    reporter=NULL_REPORTER,
 ) -> dict:
     """Transcribe audio chunks using the Whisper API. Returns segments + full text.
 
@@ -136,21 +139,31 @@ def transcribe_audio(
     chunks = _normalize_chunks(audio_chunks)
     results: list[list[dict]] = [[] for _ in chunks]
 
+    reporter.step("transcribe", f"Transcribing {len(chunks)} chunk(s) with Whisper",
+                  total=len(chunks) or None)
+
     def run(index: int) -> None:
         try:
             results[index] = _transcribe_chunk(chunks[index], client)
         except Exception as exc:  # noqa: BLE001 - keep going on partial failure
-            print(f"    Warning: chunk {index + 1}/{len(chunks)} failed to "
-                  f"transcribe ({exc}); skipping.")
+            reporter.warn(f"chunk {index + 1}/{len(chunks)} failed to "
+                          f"transcribe ({exc}); skipping.")
 
-    if max_workers and len(chunks) > 1:
-        with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as pool:
-            futures = [pool.submit(run, i) for i in range(len(chunks))]
-            for future in as_completed(futures):
-                future.result()  # run() swallows errors; this just surfaces bugs
-    else:
-        for i in range(len(chunks)):
-            run(i)
+    try:
+        if max_workers and len(chunks) > 1:
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(chunks))) as pool:
+                futures = [pool.submit(run, i) for i in range(len(chunks))]
+                # Advance from this (the main) thread as each chunk finishes, so
+                # the progress bar never touches rich from a worker thread.
+                for future in as_completed(futures):
+                    future.result()  # run() swallows errors; this just surfaces bugs
+                    reporter.advance("transcribe")
+        else:
+            for i in range(len(chunks)):
+                run(i)
+                reporter.advance("transcribe")
+    finally:
+        reporter.done("transcribe")
 
     all_segments = [seg for chunk_segs in results for seg in chunk_segs]
     # Chunks are in timeline order, but sort defensively so timestamps are always
@@ -179,12 +192,21 @@ def generate_srt(segments: list[dict], output_path: str):
             f.write(f"{seg['text']}\n\n")
 
 
-def translate_segments(segments: list[dict], client: OpenAI) -> list[dict]:
+def translate_segments(segments: list[dict], client: OpenAI, reporter=NULL_REPORTER) -> list[dict]:
     """Translate German segments to English using GPT-4o."""
-    translated = []
-
     # Batch segments for efficiency (translate in groups of 20)
     batch_size = 20
+    num_batches = math.ceil(len(segments) / batch_size)
+    reporter.step("translate", f"Translating {len(segments)} line(s) to English",
+                  total=num_batches or None)
+    try:
+        return _translate_batches(segments, client, batch_size, reporter)
+    finally:
+        reporter.done("translate")
+
+
+def _translate_batches(segments, client, batch_size, reporter):
+    translated = []
     for i in range(0, len(segments), batch_size):
         batch = segments[i:i+batch_size]
 
@@ -220,28 +242,33 @@ def translate_segments(segments: list[dict], client: OpenAI) -> list[dict]:
                 "text": trans_text
             })
 
+        reporter.advance("translate")
+
     return translated
 
 
-def create_subtitles(audio_chunks: list, video_path: str, client: OpenAI) -> tuple[str, str, str]:
+def create_subtitles(
+    audio_chunks: list,
+    video_path: str,
+    client: OpenAI,
+    reporter=NULL_REPORTER,
+) -> tuple[str, str, str]:
     """Main function: transcribe, create German SRT, translate, create English SRT.
     Returns (german_srt_path, english_srt_path, full_transcript_text)."""
 
     video_dir = os.path.dirname(os.path.abspath(video_path))
     video_name = os.path.splitext(os.path.basename(video_path))[0]
 
-    print("  Transcribing audio with Whisper API...")
-    result = transcribe_audio(audio_chunks, client)
+    result = transcribe_audio(audio_chunks, client, reporter=reporter)
 
     german_srt = os.path.join(video_dir, f"{video_name}.de.srt")
-    print(f"  Writing German subtitles: {german_srt}")
     generate_srt(result["segments"], german_srt)
+    reporter.success(f"German subtitles → {german_srt}")
 
-    print("  Translating subtitles to English with GPT-4o...")
-    translated = translate_segments(result["segments"], client)
+    translated = translate_segments(result["segments"], client, reporter=reporter)
 
     english_srt = os.path.join(video_dir, f"{video_name}.en.srt")
-    print(f"  Writing English subtitles: {english_srt}")
     generate_srt(translated, english_srt)
+    reporter.success(f"English subtitles → {english_srt}")
 
     return german_srt, english_srt, result["text"]
