@@ -5,13 +5,17 @@ Generate bilingual subtitles (German + English) and an analysis report from Germ
 ## Features
 
 - Extracts audio from video files (MP4, MOV, MKV, AVI, WebM)
-- Automatically splits large audio to stay within Whisper's 25 MB upload limit
+- Splits audio at long pauses (silence detection) so it stays within Whisper's
+  25 MB upload limit **and** never asks Whisper to transcribe across a long
+  silence — the situation that otherwise corrupts its timestamps
+- Anchors every chunk to its real start time, so subtitle timing stays accurate
+  no matter how long the speaker pauses
 - Transcribes German speech to text using [Whisper](https://platform.openai.com/docs/guides/speech-to-text)
+- Transcribes chunks in parallel and tolerates a failed chunk without aborting the run
 - Generates German `.de.srt` subtitle files
 - Translates subtitles to English and generates `.en.srt` files using GPT-4o
 - Produces a structured analysis report (topic, key points, action items, notable quotes)
 - Filters out common Whisper hallucinations (phantom subtitles, attribution text)
-- Accurate subtitle timing even with long pauses in speech
 - Supports bundled ffmpeg binaries for systems without ffmpeg in PATH
 
 ## Prerequisites
